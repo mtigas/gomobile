@@ -137,8 +137,8 @@ func envInit() (err error) {
 		"GOARM=7",
 		"CC=" + clang,
 		"CXX=" + clang,
-		"CGO_CFLAGS=" + cflags + " -miphoneos-version-min=6.1 -arch " + archClang("arm"),
-		"CGO_LDFLAGS=" + cflags + " -miphoneos-version-min=6.1 -arch " + archClang("arm"),
+		"CGO_CFLAGS=" + cflags + " -miphoneos-version-min=8.0 -arch " + archClang("arm"),
+		"CGO_LDFLAGS=" + cflags + " -miphoneos-version-min=8.0 -arch " + archClang("arm"),
 		"CGO_ENABLED=1",
 	}
 	darwinArmNM = "nm"
@@ -147,8 +147,8 @@ func envInit() (err error) {
 		"GOARCH=arm64",
 		"CC=" + clang,
 		"CXX=" + clang,
-		"CGO_CFLAGS=" + cflags + " -miphoneos-version-min=6.1 -arch " + archClang("arm64"),
-		"CGO_LDFLAGS=" + cflags + " -miphoneos-version-min=6.1 -arch " + archClang("arm64"),
+		"CGO_CFLAGS=" + cflags + " -miphoneos-version-min=8.0 -arch " + archClang("arm64"),
+		"CGO_LDFLAGS=" + cflags + " -miphoneos-version-min=8.0 -arch " + archClang("arm64"),
 		"CGO_ENABLED=1",
 	}
 
@@ -161,8 +161,8 @@ func envInit() (err error) {
 		"GOARCH=386",
 		"CC=" + clang,
 		"CXX=" + clang,
-		"CGO_CFLAGS=" + cflags + " -mios-simulator-version-min=6.1 -arch " + archClang("386"),
-		"CGO_LDFLAGS=" + cflags + " -mios-simulator-version-min=6.1 -arch " + archClang("386"),
+		"CGO_CFLAGS=" + cflags + " -mios-simulator-version-min=8.0 -arch " + archClang("386"),
+		"CGO_LDFLAGS=" + cflags + " -mios-simulator-version-min=8.0 -arch " + archClang("386"),
 		"CGO_ENABLED=1",
 	}
 	darwinAmd64Env = []string{
@@ -170,8 +170,8 @@ func envInit() (err error) {
 		"GOARCH=amd64",
 		"CC=" + clang,
 		"CXX=" + clang,
-		"CGO_CFLAGS=" + cflags + " -mios-simulator-version-min=6.1 -arch x86_64",
-		"CGO_LDFLAGS=" + cflags + " -mios-simulator-version-min=6.1 -arch x86_64",
+		"CGO_CFLAGS=" + cflags + " -mios-simulator-version-min=8.0 -arch x86_64",
+		"CGO_LDFLAGS=" + cflags + " -mios-simulator-version-min=8.0 -arch x86_64",
 		"CGO_ENABLED=1",
 	}
 
