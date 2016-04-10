@@ -185,7 +185,9 @@ func installDarwin() error {
 	if err := installStd(darwinArm64Env); err != nil {
 		return err
 	}
-	// TODO(crawshaw): darwin/386 for the iOS simulator?
+	if err := installStd(darwin386Env, "-tags=ios"); err != nil {
+		return err
+	}
 	if err := installStd(darwinAmd64Env, "-tags=ios"); err != nil {
 		return err
 	}
