@@ -103,6 +103,13 @@ func main() {
 		if fn.Recv == nil || fn.Recv.List[0].Names[0].Name != "ctx" {
 			continue
 		}
+		tname := "<unknown>"
+		t := fn.Recv.List[0].Type
+		if star, ok := t.(*ast.StarExpr); ok {
+			tname = "*" + star.X.(*ast.Ident).Name
+		} else if t, ok := t.(*ast.Ident); ok {
+			tname = t.Name
+		}
 
 		var (
 			params      []string
@@ -112,7 +119,7 @@ func main() {
 		)
 
 		// Print function signature.
-		fmt.Fprintf(buf, "func (ctx *context) %s(", fn.Name.Name)
+		fmt.Fprintf(buf, "func (ctx %s) %s(", tname, fn.Name.Name)
 		for i, p := range fn.Type.Params.List {
 			if i > 0 {
 				fmt.Fprint(buf, ", ")
@@ -315,7 +322,7 @@ func (ctx *context) enqueueDebug(c call) uintptr {
 
 type entry struct {
 	name  string
-	value int
+	value uint64
 }
 
 // enum builds a list of all GL constants that make up the gl.Enum type.
@@ -337,11 +344,11 @@ func enum(f *ast.File) []entry {
 			if len(v.Names) != 1 || len(v.Values) != 1 {
 				continue
 			}
-			val, err := strconv.ParseInt(v.Values[0].(*ast.BasicLit).Value, 0, 32)
+			val, err := strconv.ParseUint(v.Values[0].(*ast.BasicLit).Value, 0, 64)
 			if err != nil {
 				log.Fatalf("enum %s: %v", v.Names[0].Name, err)
 			}
-			entries = append(entries, entry{v.Names[0].Name, int(val)})
+			entries = append(entries, entry{v.Names[0].Name, val})
 		}
 	}
 	return entries
@@ -349,7 +356,7 @@ func enum(f *ast.File) []entry {
 
 func dedup(entries []entry) []entry {
 	// Find all duplicates. Use "%d" as the name of any value with duplicates.
-	seen := make(map[int]int)
+	seen := make(map[uint64]int)
 	for _, e := range entries {
 		seen[e.value]++
 	}

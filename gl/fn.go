@@ -23,6 +23,8 @@ type fnargs struct {
 	a5 uintptr
 	a6 uintptr
 	a7 uintptr
+	a8 uintptr
+	a9 uintptr
 }
 
 type glfn int
@@ -169,6 +171,23 @@ const (
 	glfnVertexAttrib4fv
 	glfnVertexAttribPointer
 	glfnViewport
+
+	// ES 3.0 functions
+	glfnUniformMatrix2x3fv
+	glfnUniformMatrix3x2fv
+	glfnUniformMatrix2x4fv
+	glfnUniformMatrix4x2fv
+	glfnUniformMatrix3x4fv
+	glfnUniformMatrix4x3fv
+	glfnBlitFramebuffer
+	glfnUniform1ui
+	glfnUniform2ui
+	glfnUniform3ui
+	glfnUniform4ui
+	glfnUniform1uiv
+	glfnUniform2uiv
+	glfnUniform3uiv
+	glfnUniform4uiv
 )
 
 func goString(buf []byte) string {

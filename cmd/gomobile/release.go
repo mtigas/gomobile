@@ -17,6 +17,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"hash"
 	"io"
@@ -27,9 +28,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 )
 
-const ndkVersion = "ndk-r10e"
+const ndkVersion = "ndk-r12"
 
 type version struct {
 	os   string
@@ -38,7 +40,6 @@ type version struct {
 
 var hosts = []version{
 	{"darwin", "x86_64"},
-	{"linux", "x86"},
 	{"linux", "x86_64"},
 	{"windows", "x86"},
 	{"windows", "x86_64"},
@@ -46,21 +47,25 @@ var hosts = []version{
 
 type target struct {
 	arch       string
-	platform   string
+	platform   int
 	gcc        string
 	toolPrefix string
 }
 
 var targets = []target{
-	{"arm", "android-15", "arm-linux-androideabi-4.8", "arm-linux-androideabi"},
-	{"arm64", "android-21", "aarch64-linux-android-4.9", "aarch64-linux-android"},
-	{"x86", "android-15", "x86-4.8", "i686-linux-android"},
-	{"x86_64", "android-21", "x86_64-4.9", "x86_64-linux-android"},
+	{"arm", 15, "arm-linux-androideabi-4.9", "arm-linux-androideabi"},
+	{"arm64", 21, "aarch64-linux-android-4.9", "aarch64-linux-android"},
+	{"x86", 15, "x86-4.9", "i686-linux-android"},
+	{"x86_64", 21, "x86_64-4.9", "x86_64-linux-android"},
 }
 
-var tmpdir string
+var (
+	ndkdir = flag.String("ndkdir", "", "Directory for the downloaded NDKs for caching")
+	tmpdir string
+)
 
 func main() {
+	flag.Parse()
 	var err error
 	tmpdir, err = ioutil.TempDir("", "gomobile-release-")
 	if err != nil {
@@ -128,16 +133,13 @@ func mkALPkg() (err error) {
 		}
 		buildDir := alTmpDir + "/build/" + abi
 		toolchain := buildDir + "/toolchain"
-		if err := os.MkdirAll(toolchain, 0755); err != nil {
-			return err
-		}
 		// standalone ndk toolchains make openal-soft's build config easier.
 		if err := run(ndkRoot, "env",
-			"build/tools/make-standalone-toolchain.sh",
+			"build/tools/make_standalone_toolchain.py",
 			"--arch="+t.arch,
-			"--platform="+t.platform,
+			"--api="+strconv.Itoa(t.platform),
 			"--install-dir="+toolchain); err != nil {
-			return fmt.Errorf("make-standalone-toolchain.sh failed: %v", err)
+			return fmt.Errorf("make_standalone_toolchain.py failed: %v", err)
 		}
 
 		orgPath := os.Getenv("PATH")
@@ -158,7 +160,7 @@ func mkALPkg() (err error) {
 	}
 
 	// Build the tarball.
-	aw := newArchiveWriter("gomobile-openal-soft-1.16.0.1.tar.gz")
+	aw := newArchiveWriter("gomobile-openal-soft-1.16.0.1-" + ndkVersion + ".tar.gz")
 	defer func() {
 		err2 := aw.Close()
 		if err == nil {
@@ -187,15 +189,14 @@ func mkALPkg() (err error) {
 }
 
 func fetchNDK(host version) (binPath, url string, err error) {
-	ndkName := "android-" + ndkVersion + "-" + host.os + "-" + host.arch + "."
-	if host.os == "windows" {
-		ndkName += "exe"
-	} else {
-		ndkName += "bin"
-	}
+	ndkName := "android-" + ndkVersion + "-" + host.os + "-" + host.arch + ".zip"
 
-	url = "http://dl.google.com/android/ndk/" + ndkName
-	binPath = tmpdir + "/" + ndkName
+	url = "https://dl.google.com/android/repository/" + ndkName
+	binPath = *ndkdir
+	if binPath == "" {
+		binPath = tmpdir
+	}
+	binPath += "/" + ndkName
 
 	if _, err := os.Stat(binPath); err == nil {
 		log.Printf("\t%q: using cached NDK\n", ndkName)
@@ -236,7 +237,7 @@ func mkpkg(host version) error {
 	// We preserve the same file layout to make the full NDK interchangable
 	// with the cut down file.
 	for _, t := range targets {
-		usr := fmt.Sprintf("android-%s/platforms/%s/arch-%s/usr/", ndkVersion, t.platform, t.arch)
+		usr := fmt.Sprintf("android-%s/platforms/android-%d/arch-%s/usr/", ndkVersion, t.platform, t.arch)
 		gcc := fmt.Sprintf("android-%s/toolchains/%s/prebuilt/", ndkVersion, t.gcc)
 
 		if host.os == "windows" && host.arch == "x86" {
@@ -248,7 +249,7 @@ func mkpkg(host version) error {
 		if err := os.MkdirAll(dst+"/"+usr, 0755); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(dst+"/"+gcc, 0755); err != nil {
+		if err := os.MkdirAll(dst+"/"+gcc+"/bin", 0755); err != nil {
 			return err
 		}
 
@@ -261,9 +262,34 @@ func mkpkg(host version) error {
 			return err
 		}
 
-		if err := move(dst+"/"+gcc, src+"/"+gcc, "bin", "lib", "libexec", "COPYING", "COPYING.LIB"); err != nil {
+		if err := move(dst+"/"+gcc, src+"/"+gcc, "lib", "COPYING", "COPYING.LIB"); err != nil {
 			return err
 		}
+		for _, exe := range []string{"as", "ld"} {
+			if host.os == "windows" {
+				exe += ".exe"
+			}
+			if err := move(dst+"/"+gcc+"/bin", src+"/"+gcc+"/bin", t.toolPrefix+"-"+exe); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Copy the LLVM clang and clang++ compilers
+	llvm := fmt.Sprintf("android-%s/toolchains/llvm/prebuilt/", ndkVersion)
+
+	if host.os == "windows" && host.arch == "x86" {
+		llvm += "windows"
+	} else {
+		llvm += host.os + "-" + host.arch
+	}
+
+	if err := os.MkdirAll(dst+"/"+llvm, 0755); err != nil {
+		return err
+	}
+
+	if err := move(dst+"/"+llvm, src+"/"+llvm, "bin", "lib64", "NOTICE"); err != nil {
+		return err
 	}
 
 	// Build the tarball.
@@ -336,6 +362,9 @@ func fetch(dst, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if sc := resp.StatusCode; sc != http.StatusOK {
+		return "", fmt.Errorf("invalid HTTP status %d", sc)
+	}
 	hashw := sha256.New()
 	_, err = io.Copy(io.MultiWriter(hashw, f), resp.Body)
 	err2 := resp.Body.Close()
@@ -353,11 +382,8 @@ func fetch(dst, url string) (string, error) {
 }
 
 func inflate(dst, path string) error {
-	p7zip := "7z"
-	if runtime.GOOS == "darwin" {
-		p7zip = "/Applications/Keka.app/Contents/Resources/keka7z"
-	}
-	cmd := exec.Command(p7zip, "x", path)
+	unzip := "unzip"
+	cmd := exec.Command(unzip, path)
 	cmd.Dir = dst
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -7,6 +7,7 @@
 #define __GoVars_H__
 
 #include <Foundation/Foundation.h>
+#include "GoUniverse.h"
 
 @class GoVarsS;
 @protocol GoVarsI;
@@ -41,8 +42,8 @@
 + (GoVarsS*) aStructPtr;
 + (void) setAStructPtr:(GoVarsS*)v;
 
-+ (int) anInt;
-+ (void) setAnInt:(int)v;
++ (long) anInt;
++ (void) setAnInt:(long)v;
 
 + (int16_t) anInt16;
 + (void) setAnInt16:(int16_t)v;

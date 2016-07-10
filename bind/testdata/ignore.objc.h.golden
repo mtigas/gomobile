@@ -7,6 +7,7 @@
 #define __GoIgnore_H__
 
 #include <Foundation/Foundation.h>
+#include "GoUniverse.h"
 
 @class GoIgnoreS;
 @protocol GoIgnoreI;
@@ -57,5 +58,8 @@
 - (id)initWithRef:(id)ref;
 // skipped method I.Argument with unsupported parameter or return types
 
+// skipped method I.Result with unsupported parameter or return types
+
+@end
 
 #endif
