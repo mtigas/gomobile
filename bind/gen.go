@@ -11,6 +11,9 @@ import (
 	"go/types"
 	"io"
 	"regexp"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 type (
@@ -50,11 +53,34 @@ func (list ErrorList) Error() string {
 	return buf.String()
 }
 
-type generator struct {
-	*printer
-	fset   *token.FileSet
-	allPkg []*types.Package
-	pkg    *types.Package
+// interfaceInfo comes from Init and collects the auxillary information
+// needed to generate bindings for an exported Go interface in a bound
+// package.
+type interfaceInfo struct {
+	obj     *types.TypeName
+	t       *types.Interface
+	summary ifaceSummary
+}
+
+// structInfo comes from Init and collects the auxillary information
+// needed to generate bindings for an exported Go struct in a bound
+// package.
+type structInfo struct {
+	obj *types.TypeName
+	t   *types.Struct
+}
+
+// Generator contains the common Go package information
+// needed for the specific Go, Java, ObjC generators.
+//
+// After setting Printer, Fset, AllPkg, Pkg, the Init
+// method is used to initialize the auxiliary information
+// about the package to be generated, Pkg.
+type Generator struct {
+	*Printer
+	Fset   *token.FileSet
+	AllPkg []*types.Package
+	Pkg    *types.Package
 	err    ErrorList
 
 	// fields set by init.
@@ -85,14 +111,14 @@ func pkgPrefix(pkg *types.Package) string {
 	return pkg.Name()
 }
 
-func (g *generator) init() {
-	if g.pkg != nil {
-		g.pkgName = g.pkg.Name()
+func (g *Generator) Init() {
+	if g.Pkg != nil {
+		g.pkgName = g.Pkg.Name()
 	}
-	g.pkgPrefix = pkgPrefix(g.pkg)
+	g.pkgPrefix = pkgPrefix(g.Pkg)
 
-	if g.pkg != nil {
-		scope := g.pkg.Scope()
+	if g.Pkg != nil {
+		scope := g.Pkg.Scope()
 		hasExported := false
 		for _, name := range scope.Names() {
 			obj := scope.Lookup(name)
@@ -124,7 +150,7 @@ func (g *generator) init() {
 			}
 		}
 		if !hasExported {
-			g.errorf("no exported names in the package %q", g.pkg.Path())
+			g.errorf("no exported names in the package %q", g.Pkg.Path())
 		}
 	} else {
 		// Bind the single supported type from the universe scope, error.
@@ -132,7 +158,7 @@ func (g *generator) init() {
 		t := errType.Type().Underlying().(*types.Interface)
 		g.interfaces = append(g.interfaces, interfaceInfo{errType, t, makeIfaceSummary(t)})
 	}
-	for _, p := range g.allPkg {
+	for _, p := range g.AllPkg {
 		scope := p.Scope()
 		for _, name := range scope.Names() {
 			obj := scope.Lookup(name)
@@ -149,20 +175,46 @@ func (g *generator) init() {
 	}
 }
 
-func (_ *generator) toCFlag(v bool) int {
+// constructorType returns the type T for a function of the forms:
+//
+// func NewT...(...) *T
+// func NewT...(...) (*T, error)
+func (g *Generator) constructorType(f *types.Func) *types.TypeName {
+	sig := f.Type().(*types.Signature)
+	res := sig.Results()
+	if res.Len() != 1 && !(res.Len() == 2 && isErrorType(res.At(1).Type())) {
+		return nil
+	}
+	rt := res.At(0).Type()
+	pt, ok := rt.(*types.Pointer)
+	if !ok {
+		return nil
+	}
+	nt, ok := pt.Elem().(*types.Named)
+	if !ok {
+		return nil
+	}
+	obj := nt.Obj()
+	if !strings.HasPrefix(f.Name(), "New"+obj.Name()) {
+		return nil
+	}
+	return obj
+}
+
+func toCFlag(v bool) int {
 	if v {
 		return 1
 	}
 	return 0
 }
 
-func (g *generator) errorf(format string, args ...interface{}) {
+func (g *Generator) errorf(format string, args ...interface{}) {
 	g.err = append(g.err, fmt.Errorf(format, args...))
 }
 
 // cgoType returns the name of a Cgo type suitable for converting a value of
 // the given type.
-func (g *generator) cgoType(t types.Type) string {
+func (g *Generator) cgoType(t types.Type) string {
 	switch t := t.(type) {
 	case *types.Basic:
 		switch t.Kind() {
@@ -215,7 +267,7 @@ func (g *generator) cgoType(t types.Type) string {
 	return "TODO"
 }
 
-func (g *generator) genInterfaceMethodSignature(m *types.Func, iName string, header bool) {
+func (g *Generator) genInterfaceMethodSignature(m *types.Func, iName string, header bool, g_paramName func(*types.Tuple, int) string) {
 	sig := m.Type().(*types.Signature)
 	params := sig.Params()
 	res := sig.Results()
@@ -242,7 +294,7 @@ func (g *generator) genInterfaceMethodSignature(m *types.Func, iName string, hea
 	g.Printf("cproxy%s_%s_%s(int32_t refnum", g.pkgPrefix, iName, m.Name())
 	for i := 0; i < params.Len(); i++ {
 		t := params.At(i).Type()
-		g.Printf(", %s %s", g.cgoType(t), paramName(params, i))
+		g.Printf(", %s %s", g.cgoType(t), g_paramName(params, i))
 	}
 	g.Printf(")")
 	if header {
@@ -252,8 +304,8 @@ func (g *generator) genInterfaceMethodSignature(m *types.Func, iName string, hea
 	}
 }
 
-func (g *generator) validPkg(pkg *types.Package) bool {
-	for _, p := range g.allPkg {
+func (g *Generator) validPkg(pkg *types.Package) bool {
+	for _, p := range g.AllPkg {
 		if p == pkg {
 			return true
 		}
@@ -263,7 +315,7 @@ func (g *generator) validPkg(pkg *types.Package) bool {
 
 // isSigSupported returns whether the generators can handle a given
 // function signature
-func (g *generator) isSigSupported(t types.Type) bool {
+func (g *Generator) isSigSupported(t types.Type) bool {
 	sig := t.(*types.Signature)
 	params := sig.Params()
 	for i := 0; i < params.Len(); i++ {
@@ -281,8 +333,8 @@ func (g *generator) isSigSupported(t types.Type) bool {
 }
 
 // isSupported returns whether the generators can handle the type.
-func (g *generator) isSupported(t types.Type) bool {
-	if isErrorType(t) {
+func (g *Generator) isSupported(t types.Type) bool {
+	if isErrorType(t) || isWrapperType(t) {
 		return true
 	}
 	switch t := t.(type) {
@@ -309,10 +361,9 @@ func (g *generator) isSupported(t types.Type) bool {
 
 var paramRE = regexp.MustCompile(`^p[0-9]*$`)
 
-// paramName replaces incompatible name with a p0-pN name.
+// basicParamName replaces incompatible name with a p0-pN name.
 // Missing names, or existing names of the form p[0-9] are incompatible.
-// TODO(crawshaw): Replace invalid unicode names.
-func paramName(params *types.Tuple, pos int) string {
+func basicParamName(params *types.Tuple, pos int) string {
 	name := params.At(pos).Name()
 	if name == "" || name[0] == '_' || paramRE.MatchString(name) {
 		name = fmt.Sprintf("p%d", pos)
@@ -333,4 +384,44 @@ func constExactString(o *types.Const) string {
 	}
 	// TODO: warning?
 	return v.String()
+}
+
+func lowerFirst(s string) string {
+	if s == "" {
+		return ""
+	}
+
+	var conv []rune
+	for len(s) > 0 {
+		r, n := utf8.DecodeRuneInString(s)
+		if !unicode.IsUpper(r) {
+			if l := len(conv); l > 1 {
+				conv[l-1] = unicode.ToUpper(conv[l-1])
+			}
+			return string(conv) + s
+		}
+		conv = append(conv, unicode.ToLower(r))
+		s = s[n:]
+	}
+	return string(conv)
+}
+
+// newNameSanitizer returns a functions that replaces all dashes and dots
+// with underscores, as well as avoiding reserved words by suffixing such
+// identifiers with underscores.
+func newNameSanitizer(res []string) func(s string) string {
+	reserved := make(map[string]bool)
+	for _, word := range res {
+		reserved[word] = true
+	}
+	symbols := strings.NewReplacer(
+		"-", "_",
+		".", "_",
+	)
+	return func(s string) string {
+		if reserved[s] {
+			return s + "_"
+		}
+		return symbols.Replace(s)
+	}
 }

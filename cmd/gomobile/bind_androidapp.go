@@ -35,11 +35,15 @@ func goAndroidBind(pkgs []*build.Package, androidArchs []string) error {
 
 	androidDir := filepath.Join(tmpdir, "android")
 	mainFile := filepath.Join(tmpdir, "androidlib/main.go")
+	jpkgSrc := filepath.Join(tmpdir, "gen")
 
 	// Generate binding code and java source code only when processing the first package.
 	first := true
 	for _, arch := range androidArchs {
 		env := androidEnv[arch]
+		// Add the generated Java class wrapper packages to GOPATH
+		gopath := fmt.Sprintf("GOPATH=%s%c%s", jpkgSrc, filepath.ListSeparator, os.Getenv("GOPATH"))
+		env = append(env, gopath)
 		toolchain := ndk.Toolchain(arch)
 
 		if !first {
@@ -60,6 +64,16 @@ func goAndroidBind(pkgs []*build.Package, androidArchs []string) error {
 		}
 		first = false
 
+		srcDir := filepath.Join(tmpdir, "gomobile_bind")
+		if err := mkdir(srcDir); err != nil {
+			return err
+		}
+
+		classes, err := GenClasses(pkgs, srcDir, jpkgSrc)
+		if err != nil {
+			return err
+		}
+
 		typesPkgs, err := loadExportData(pkgs, env, androidArgs...)
 		if err != nil {
 			return fmt.Errorf("loadExportData failed %v", err)
@@ -70,7 +84,6 @@ func goAndroidBind(pkgs []*build.Package, androidArchs []string) error {
 			return err
 		}
 
-		srcDir := filepath.Join(tmpdir, "gomobile_bind")
 		for _, pkg := range binder.pkgs {
 			if err := binder.GenGo(pkg, binder.pkgs, srcDir); err != nil {
 				return err
@@ -95,16 +108,13 @@ func goAndroidBind(pkgs []*build.Package, androidArchs []string) error {
 		}
 		repo := filepath.Clean(filepath.Join(p.Dir, "..")) // golang.org/x/mobile directory.
 
+		jclsDir := filepath.Join(androidDir, "src", "main", "java")
 		for _, pkg := range binder.pkgs {
-			pkgpath := strings.Replace(bindJavaPkg, ".", "/", -1)
-			if bindJavaPkg == "" {
-				pkgpath = "go/" + pkg.Name()
-			}
-			if err := binder.GenJava(pkg, binder.pkgs, srcDir, filepath.Join(androidDir, "src/main/java/"+pkgpath)); err != nil {
+			if err := binder.GenJava(pkg, binder.pkgs, classes, srcDir, jclsDir); err != nil {
 				return err
 			}
 		}
-		if err := binder.GenJava(nil, binder.pkgs, srcDir, filepath.Join(androidDir, "src/main/java/go")); err != nil {
+		if err := binder.GenJava(nil, binder.pkgs, classes, srcDir, jclsDir); err != nil {
 			return err
 		}
 		if err := binder.GenJavaSupport(srcDir); err != nil {
@@ -328,7 +338,8 @@ func buildJar(w io.Writer, srcDir string) error {
 		}
 	}
 
-	apiPath, err := androidAPIPath()
+	bClspath, err := bootClasspath()
+
 	if err != nil {
 		return err
 	}
@@ -337,8 +348,12 @@ func buildJar(w io.Writer, srcDir string) error {
 		"-d", dst,
 		"-source", javacTargetVer,
 		"-target", javacTargetVer,
-		"-bootclasspath", filepath.Join(apiPath, "android.jar"),
+		"-bootclasspath", bClspath,
 	}
+	if bindClasspath != "" {
+		args = append(args, "-classpath", bindClasspath)
+	}
+
 	args = append(args, srcFiles...)
 
 	javac := exec.Command("javac", args...)

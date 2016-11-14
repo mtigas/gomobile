@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -19,6 +20,9 @@ import (
 	"strings"
 
 	"golang.org/x/mobile/bind"
+	"golang.org/x/mobile/internal/importers"
+	"golang.org/x/mobile/internal/importers/java"
+	"golang.org/x/mobile/internal/importers/objc"
 )
 
 // ctx, pkg, tmpdir in build.go
@@ -26,7 +30,7 @@ import (
 var cmdBind = &command{
 	run:   runBind,
 	Name:  "bind",
-	Usage: "[-target android|ios] [-o output] [build flags] [package]",
+	Usage: "[-target android|ios] [-bootclasspath <path>] [-classpath <path>] [-o output] [build flags] [package]",
 	Short: "build a library for Android and iOS",
 	Long: `
 Bind generates language bindings for the package named by the import
@@ -58,6 +62,10 @@ can be selected by specifying target type with the architecture name. E.g.,
 For -target ios, gomobile must be run on an OS X machine with Xcode
 installed. Support is not complete. The generated Objective-C types
 are prefixed with 'Go' unless the -prefix flag is provided.
+
+For -target android, the -bootclasspath and -classpath flags are used to
+control the bootstrap classpath and the classpath for Go wrappers to Java
+classes.
 
 The -v flag provides verbose output, including the list of packages built.
 
@@ -132,16 +140,20 @@ func importPackages(args []string) ([]*build.Package, error) {
 }
 
 var (
-	bindPrefix  string // -prefix
-	bindJavaPkg string // -javapkg
+	bindPrefix        string // -prefix
+	bindJavaPkg       string // -javapkg
+	bindClasspath     string // -classpath
+	bindBootClasspath string // -bootclasspath
 )
 
 func init() {
 	// bind command specific commands.
 	cmdBind.flag.StringVar(&bindJavaPkg, "javapkg", "",
-		"specifies custom Java package path used instead of the default 'go.<go package name>'. Valid only with -target=android.")
+		"specifies custom Java package path prefix used instead of the default 'go'. Valid only with -target=android.")
 	cmdBind.flag.StringVar(&bindPrefix, "prefix", "",
-		"custom Objective-C name prefix used instead of the default 'Go'. Valid only with -lang=ios.")
+		"custom Objective-C name prefix used instead of the default 'Go'. Valid only with -target=ios.")
+	cmdBind.flag.StringVar(&bindClasspath, "classpath", "", "The classpath for imported Java classes. Valid only with -target=android.")
+	cmdBind.flag.StringVar(&bindBootClasspath, "bootclasspath", "", "The bootstrap classpath for imported Java classes. Valid only with -target=android.")
 }
 
 type binder struct {
@@ -169,10 +181,13 @@ func (b *binder) GenObjcSupport(outdir string) error {
 	if err := copyFile(filepath.Join(outdir, "seq_darwin.go"), filepath.Join(objcPkg.Dir, "seq_darwin.go.support")); err != nil {
 		return err
 	}
+	if err := copyFile(filepath.Join(outdir, "ref.h"), filepath.Join(objcPkg.Dir, "ref.h")); err != nil {
+		return err
+	}
 	return copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(objcPkg.Dir, "seq.h"))
 }
 
-func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir string) (string, error) {
+func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir string, wrappers []*objc.Named) (string, error) {
 	const bindPrefixDefault = "Go"
 	if bindPrefix == "" || pkg == nil {
 		bindPrefix = bindPrefixDefault
@@ -195,11 +210,18 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 	hfile := filepath.Join(outdir, fileBase+".h")
 	gohfile := filepath.Join(outdir, pkgName+".h")
 
-	conf := &bind.GeneratorConfig{
-		Fset:   b.fset,
-		Pkg:    pkg,
-		AllPkg: allPkg,
+	var buf bytes.Buffer
+	g := &bind.ObjcGen{
+		Generator: &bind.Generator{
+			Printer: &bind.Printer{Buf: &buf, IndentEach: []byte("\t")},
+			Fset:    b.fset,
+			AllPkg:  allPkg,
+			Pkg:     pkg,
+		},
+		Prefix: bindPrefix,
 	}
+	g.Init(wrappers)
+
 	generate := func(w io.Writer) error {
 		if buildX {
 			printcmd("gobind %s -outdir=%s %s", bindOption, outdir, pkgPath)
@@ -207,8 +229,12 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenObjc(conf, bindPrefix, bind.ObjcM)
+		buf.Reset()
+		if err := g.GenM(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	if err := writeFile(mfile, generate); err != nil {
 		return "", err
@@ -217,8 +243,12 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenObjc(conf, bindPrefix, bind.ObjcH)
+		buf.Reset()
+		if err := g.GenH(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	if err := writeFile(hfile, generate); err != nil {
 		return "", err
@@ -227,8 +257,12 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenObjc(conf, bindPrefix, bind.ObjcGoH)
+		buf.Reset()
+		if err := g.GenGoH(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	if err := writeFile(gohfile, generate); err != nil {
 		return "", err
@@ -251,7 +285,198 @@ func (b *binder) GenJavaSupport(outdir string) error {
 	return copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(javaPkg.Dir, "seq.h"))
 }
 
-func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, outdir, javadir string) error {
+func bootClasspath() (string, error) {
+	if bindBootClasspath != "" {
+		return bindBootClasspath, nil
+	}
+	apiPath, err := androidAPIPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(apiPath, "android.jar"), nil
+}
+
+func GenObjcWrappers(pkgs []*build.Package, srcDir, pkgGen string) ([]*objc.Named, error) {
+	refs, err := importers.AnalyzePackages(pkgs, "ObjC/")
+	if err != nil {
+		return nil, err
+	}
+	types, err := objc.Import(refs)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	g := &bind.ObjcWrapper{
+		Printer: &bind.Printer{
+			IndentEach: []byte("\t"),
+			Buf:        &buf,
+		},
+	}
+	g.Init(types)
+	for i, name := range g.Packages() {
+		pkgDir := filepath.Join(pkgGen, "src", "ObjC", name)
+		if err := os.MkdirAll(pkgDir, 0700); err != nil {
+			return nil, err
+		}
+		pkgFile := filepath.Join(pkgDir, "package.go")
+		generate := func(w io.Writer) error {
+			if buildN {
+				return nil
+			}
+			buf.Reset()
+			g.GenPackage(i)
+			_, err := io.Copy(w, &buf)
+			return err
+		}
+		if err := writeFile(pkgFile, generate); err != nil {
+			return nil, fmt.Errorf("failed to create the ObjC wrapper package %s: %v", name, err)
+		}
+	}
+	generate := func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenGo()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "interfaces.go"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the ObjC wrapper Go file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenInterfaces()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(pkgGen, "src", "ObjC", "interfaces.go"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the ObjC wrapper Go file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenH()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "interfaces.h"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the ObjC wrapper header file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenM()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "interfaces.m"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the Java classes ObjC file: %v", err)
+	}
+	return types, nil
+}
+
+func GenClasses(pkgs []*build.Package, srcDir, jpkgSrc string) ([]*java.Class, error) {
+	refs, err := importers.AnalyzePackages(pkgs, "Java/")
+	if err != nil {
+		return nil, err
+	}
+	bClspath, err := bootClasspath()
+	if err != nil {
+		return nil, err
+	}
+	classes, err := java.Import(bClspath, bindClasspath, refs)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	g := &bind.ClassGen{
+		Printer: &bind.Printer{
+			IndentEach: []byte("\t"),
+			Buf:        &buf,
+		},
+	}
+	g.Init(classes)
+	for i, jpkg := range g.Packages() {
+		pkgDir := filepath.Join(jpkgSrc, "src", "Java", jpkg)
+		if err := os.MkdirAll(pkgDir, 0700); err != nil {
+			return nil, err
+		}
+		pkgFile := filepath.Join(pkgDir, "package.go")
+		generate := func(w io.Writer) error {
+			if buildN {
+				return nil
+			}
+			buf.Reset()
+			g.GenPackage(i)
+			_, err := io.Copy(w, &buf)
+			return err
+		}
+		if err := writeFile(pkgFile, generate); err != nil {
+			return nil, fmt.Errorf("failed to create the Java wrapper package %s: %v", jpkg, err)
+		}
+	}
+	generate := func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenGo()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "classes.go"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the Java classes Go file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenH()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "classes.h"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the Java classes header file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenC()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(srcDir, "classes.c"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the Java classes C file: %v", err)
+	}
+	generate = func(w io.Writer) error {
+		if buildN {
+			return nil
+		}
+		buf.Reset()
+		g.GenInterfaces()
+		_, err := io.Copy(w, &buf)
+		return err
+	}
+	if err := writeFile(filepath.Join(jpkgSrc, "src", "Java", "interfaces.go"), generate); err != nil {
+		return nil, fmt.Errorf("failed to create the Java classes interfaces file: %v", err)
+	}
+	return classes, nil
+}
+
+func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, classes []*java.Class, outdir, androidDir string) error {
+	jpkgname := bind.JavaPkgName(bindJavaPkg, pkg)
+	javadir := filepath.Join(androidDir, strings.Replace(jpkgname, ".", "/", -1))
 	var className string
 	pkgName := ""
 	pkgPath := ""
@@ -273,11 +498,18 @@ func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, outdir, ja
 		bindOption += " -javapkg=" + javaPkg
 	}
 
-	conf := &bind.GeneratorConfig{
-		Fset:   b.fset,
-		Pkg:    pkg,
-		AllPkg: allPkg,
+	var buf bytes.Buffer
+	g := &bind.JavaGen{
+		JavaPkg: javaPkg,
+		Generator: &bind.Generator{
+			Printer: &bind.Printer{Buf: &buf, IndentEach: []byte("    ")},
+			Fset:    b.fset,
+			AllPkg:  allPkg,
+			Pkg:     pkg,
+		},
 	}
+	g.Init(classes)
+
 	generate := func(w io.Writer) error {
 		if buildX {
 			printcmd("gobind %s -outdir=%s %s", bindOption, javadir, pkgPath)
@@ -285,18 +517,43 @@ func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, outdir, ja
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenJava(conf, javaPkg, bind.Java)
+		buf.Reset()
+		if err := g.GenJava(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	if err := writeFile(javaFile, generate); err != nil {
 		return err
+	}
+	for i, name := range g.ClassNames() {
+		generate := func(w io.Writer) error {
+			if buildN {
+				return nil
+			}
+			buf.Reset()
+			if err := g.GenClass(i); err != nil {
+				return err
+			}
+			_, err := io.Copy(w, &buf)
+			return err
+		}
+		classFile := filepath.Join(javadir, name+".java")
+		if err := writeFile(classFile, generate); err != nil {
+			return err
+		}
 	}
 	generate = func(w io.Writer) error {
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenJava(conf, bindJavaPkg, bind.JavaC)
+		buf.Reset()
+		if err := g.GenC(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	if err := writeFile(cFile, generate); err != nil {
 		return err
@@ -305,8 +562,12 @@ func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, outdir, ja
 		if buildN {
 			return nil
 		}
-		conf.Writer = w
-		return bind.GenJava(conf, bindJavaPkg, bind.JavaH)
+		buf.Reset()
+		if err := g.GenH(); err != nil {
+			return err
+		}
+		_, err := io.Copy(w, &buf)
+		return err
 	}
 	return writeFile(hFile, generate)
 }

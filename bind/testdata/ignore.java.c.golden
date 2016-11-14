@@ -19,15 +19,15 @@ jclass proxy_class_ignore_S;
 jmethodID proxy_class_ignore_S_cons;
 
 JNIEXPORT void JNICALL
-Java_go_ignore_Ignore_init(JNIEnv *env, jclass _unused) {
+Java_go_ignore_Ignore__1init(JNIEnv *env, jclass _unused) {
     jclass clazz;
-    clazz = (*env)->FindClass(env, "go/ignore/Ignore$S");
+    clazz = (*env)->FindClass(env, "go/ignore/S");
     proxy_class_ignore_S = (*env)->NewGlobalRef(env, clazz);
     proxy_class_ignore_S_cons = (*env)->GetMethodID(env, clazz, "<init>", "(Lgo/Seq$Ref;)V");
     clazz = (*env)->FindClass(env, "go/ignore/Ignore$proxyI");
     proxy_class_ignore_I = (*env)->NewGlobalRef(env, clazz);
     proxy_class_ignore_I_cons = (*env)->GetMethodID(env, clazz, "<init>", "(Lgo/Seq$Ref;)V");
-    clazz = (*env)->FindClass(env, "go/ignore/Ignore$I");
+    clazz = (*env)->FindClass(env, "go/ignore/I");
     // skipped method I.Argument with unsupported parameter or return types
     
     // skipped method I.Result with unsupported parameter or return types
@@ -39,17 +39,23 @@ Java_go_ignore_Ignore_init(JNIEnv *env, jclass _unused) {
 
 // skipped function Result with unsupported parameter or return types
 
-// skipped function Argument with unsupported parameter or return types
+JNIEXPORT jobject JNICALL
+Java_go_ignore_S__1_1New(JNIEnv *env, jclass clazz) {
+    int32_t refnum = new_ignore_S();
+    return go_seq_from_refnum(env, refnum, NULL, NULL);
+}
 
-// skipped function Result with unsupported parameter or return types
+// skipped function S.Argument with unsupported parameter or return types
+
+// skipped function S.Result with unsupported parameter or return types
 
 // skipped field S with unsupported type: *types.Interface
 
-// skipped function Argument with unsupported parameter or return types
+// skipped function I.Argument with unsupported parameter or return types
 
 // skipped method I with unsupported parameter or return types
 
-// skipped function Result with unsupported parameter or return types
+// skipped function I.Result with unsupported parameter or return types
 
 // skipped method I with unsupported parameter or return types
 

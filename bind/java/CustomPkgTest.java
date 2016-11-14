@@ -6,10 +6,10 @@ package go;
 
 import android.test.InstrumentationTestCase;
 
-import org.golang.custompkg.Testpkg;
+import org.golang.custompkg.testpkg.Testpkg;
 
 public class CustomPkgTest extends InstrumentationTestCase {
   public void testHi() {
-    Testpkg.Hi();
+    Testpkg.hi();
   }
 }

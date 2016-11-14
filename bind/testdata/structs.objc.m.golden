@@ -8,8 +8,6 @@
 #include "_cgo_export.h"
 #include "GoStructs.h"
 
-static NSString* errDomain = @"go.structs";
-
 
 @implementation GoStructsS {
 }
@@ -67,7 +65,7 @@ static NSString* errDomain = @"go.structs";
 	}
 	*ret0_ = _ret0_;
 	if (_error != nil && error != nil) {
-		*error = go_seq_to_nserror(_error, errDomain);
+		*error = _error;
 	}
 	return (_error == nil);
 }
@@ -80,6 +78,7 @@ static NSString* errDomain = @"go.structs";
 }
 
 @end
+
 
 
 @implementation GoStructsS2 {
@@ -105,10 +104,11 @@ static NSString* errDomain = @"go.structs";
 
 @end
 
+
 @implementation GoStructsI {
 }
 
-- (id)initWithRef:(id)ref {
+- (instancetype)initWithRef:(id)ref {
 	self = [super init];
 	if (self) { __ref = ref; }
 	return self;
@@ -125,7 +125,7 @@ static NSString* errDomain = @"go.structs";
 
 GoStructsS* GoStructsIdentity(GoStructsS* s) {
 	int32_t _s;
-	if ([(id<NSObject>)(s) isKindOfClass:[GoStructsS class]]) {
+	if ([s conformsToProtocol:@protocol(goSeqRefInterface)]) {
 		id<goSeqRefInterface> s_proxy = (id<goSeqRefInterface>)(s);
 		_s = go_seq_go_to_refnum(s_proxy._ref);
 	} else {
@@ -145,7 +145,7 @@ GoStructsS* GoStructsIdentity(GoStructsS* s) {
 
 BOOL GoStructsIdentityWithError(GoStructsS* s, GoStructsS** ret0_, NSError** error) {
 	int32_t _s;
-	if ([(id<NSObject>)(s) isKindOfClass:[GoStructsS class]]) {
+	if ([s conformsToProtocol:@protocol(goSeqRefInterface)]) {
 		id<goSeqRefInterface> s_proxy = (id<goSeqRefInterface>)(s);
 		_s = go_seq_go_to_refnum(s_proxy._ref);
 	} else {
@@ -170,7 +170,7 @@ BOOL GoStructsIdentityWithError(GoStructsS* s, GoStructsS** ret0_, NSError** err
 	}
 	*ret0_ = _ret0_;
 	if (_error != nil && error != nil) {
-		*error = go_seq_to_nserror(_error, errDomain);
+		*error = _error;
 	}
 	return (_error == nil);
 }

@@ -35,6 +35,7 @@ static int numI = 0;
        }
        return true;
    }
+   *error = [NSError errorWithDomain:@"SeqTest" code:1 userInfo:@{NSLocalizedDescriptionKey: @"NumberError"}];
    return false;
 }
 
@@ -202,9 +203,9 @@ static int numI = 0;
     }
 
     GoTestpkgGC();
-    int numS = GoTestpkgCollectS2(
+    long numS = GoTestpkgCollectS2(
             1, 10); // within 10 seconds, collect the S used in testStruct.
-    XCTAssertEqual(numS, 1, @"%d S objects were collected; S used in testStruct is supposed to "
+    XCTAssertEqual(numS, 1, @"%ld S objects were collected; S used in testStruct is supposed to "
                 @"be collected.",
                 numS);
 }
@@ -294,6 +295,23 @@ static int numI = 0;
 	XCTAssertTrue(GoTestpkgCallIError(num, NO, &error2), @"GoTestpkgCallIError(Number, NO) failed(%@); want success", error2);
 }
 
+- (void)testErrorField {
+	NSString *wantMsg = @"an error message";
+	NSError *want = [NSError errorWithDomain:@"SeqTest" code:1 userInfo:@{NSLocalizedDescriptionKey: wantMsg}];
+	GoTestpkgNode *n = GoTestpkgNewNode(@"ErrTest");
+	n.err = want;
+	NSError *got = n.err;
+	XCTAssertEqual(got, want, @"got different objects efter roundtrip");
+	NSString *gotMsg = GoTestpkgErrorMessage(want);
+	XCTAssertEqualObjects(gotMsg, wantMsg, @"err = %@, want %@", gotMsg, wantMsg);
+}
+
+- (void)testErrorDup {
+	NSError *err = GoTestpkg.globalErr;
+	XCTAssertTrue(GoTestpkgIsGlobalErr(err), @"A Go error must preserve its identity across the boundary");
+	XCTAssertEqualObjects([err localizedDescription], @"global err", "A Go error message must be preserved");
+}
+
 - (void)testVar {
 	NSString *s = GoTestpkg.stringVar;
 	XCTAssertEqualObjects(s, @"a string var", @"GoTestpkg.StringVar = %@, want 'a string var'", s);
@@ -334,6 +352,8 @@ static int numI = 0;
 	NSString *ret;
 	NSError *error;
 	XCTAssertFalse(GoTestpkgCallIStringError(num, @"alphabet", &ret, &error), @"GoTestpkgCallIStringError(Number, 'alphabet') succeeded; want error");
+	NSString *desc = [error localizedDescription];
+	XCTAssertEqualObjects(desc, @"NumberError", @"GoTestpkgCallIStringError(Number, 'alphabet') returned unexpected error message %@", desc);
 	NSError *error2;
 	XCTAssertTrue(GoTestpkgCallIStringError(num, @"number", &ret, &error2), @"GoTestpkgCallIStringError(Number, 'number') failed(%@); want success", error2);
 	XCTAssertEqualObjects(ret, @"OK", @"GoTestpkgCallIStringError(Number, 'number') returned unexpected results %@", ret);
@@ -352,9 +372,9 @@ static int numI = 0;
 
 - (void)testByteArrayRead {
 	NSData *arr = [NSMutableData dataWithLength:8];
-	int n;
+	long n;
 	XCTAssertTrue(GoTestpkgReadIntoByteArray(arr, &n, nil), @"ReadIntoByteArray failed");
-	XCTAssertEqual(n, 8, @"ReadIntoByteArray wrote %d bytes, expected %d", n, 8);
+	XCTAssertEqual(n, 8, @"ReadIntoByteArray wrote %ld bytes, expected %d", n, 8);
 	const uint8_t *b = [arr bytes];
 	for (int i = 0; i < [arr length]; i++) {
 		XCTAssertEqual(b[i], i, @"ReadIntoByteArray wrote %d at %d; expected %d", b[i], i, i);
@@ -363,7 +383,7 @@ static int numI = 0;
 	const uint8_t buf[] = {42};
 	arr = [NSData dataWithBytes:buf length:1];
 	XCTAssertTrue(GoTestpkgReadIntoByteArray(arr, &n, nil), @"ReadIntoByteArray failed");
-	XCTAssertEqual(n, 1, @"ReadIntoByteArray wrote %d bytes, expected %d", n, 8);
+	XCTAssertEqual(n, 1, @"ReadIntoByteArray wrote %ld bytes, expected %d", n, 8);
 	b = [arr bytes];
 	XCTAssertEqual(b[0], 42, @"ReadIntoByteArray wrote to an immutable NSData; expected no change");
 }

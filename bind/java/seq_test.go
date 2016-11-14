@@ -14,7 +14,18 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/mobile/internal/importers/java"
 )
+
+func TestClasses(t *testing.T) {
+	if !java.IsAvailable() {
+		t.Skipf("java importer is not available")
+	}
+	runTest(t, []string{
+		"golang.org/x/mobile/bind/testpkg/javapkg",
+	}, "", "ClassesTest")
+}
 
 func TestCustomPkg(t *testing.T) {
 	runTest(t, []string{
@@ -41,6 +52,9 @@ func TestJavaSeqTest(t *testing.T) {
 //
 // while running the benchmark to see the results.
 func TestJavaSeqBench(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping benchmark in short mode.")
+	}
 	runTest(t, []string{"golang.org/x/mobile/bind/benchmark"}, "", "SeqBench")
 }
 

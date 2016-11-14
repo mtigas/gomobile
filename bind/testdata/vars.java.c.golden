@@ -15,16 +15,22 @@ jclass proxy_class_vars_S;
 jmethodID proxy_class_vars_S_cons;
 
 JNIEXPORT void JNICALL
-Java_go_vars_Vars_init(JNIEnv *env, jclass _unused) {
+Java_go_vars_Vars__1init(JNIEnv *env, jclass _unused) {
     jclass clazz;
-    clazz = (*env)->FindClass(env, "go/vars/Vars$S");
+    clazz = (*env)->FindClass(env, "go/vars/S");
     proxy_class_vars_S = (*env)->NewGlobalRef(env, clazz);
     proxy_class_vars_S_cons = (*env)->GetMethodID(env, clazz, "<init>", "(Lgo/Seq$Ref;)V");
     clazz = (*env)->FindClass(env, "go/vars/Vars$proxyI");
     proxy_class_vars_I = (*env)->NewGlobalRef(env, clazz);
     proxy_class_vars_I_cons = (*env)->GetMethodID(env, clazz, "<init>", "(Lgo/Seq$Ref;)V");
-    clazz = (*env)->FindClass(env, "go/vars/Vars$I");
+    clazz = (*env)->FindClass(env, "go/vars/I");
     
+}
+
+JNIEXPORT jobject JNICALL
+Java_go_vars_S__1_1New(JNIEnv *env, jclass clazz) {
+    int32_t refnum = new_vars_S();
+    return go_seq_from_refnum(env, refnum, NULL, NULL);
 }
 
 JNIEXPORT void JNICALL
