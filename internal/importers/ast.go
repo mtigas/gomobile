@@ -33,6 +33,7 @@ import (
 	"go/token"
 	"path"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -58,18 +59,31 @@ type References struct {
 	// Useful as a conservative upper bound on the set of identifiers
 	// referenced from a set of packages.
 	Names map[string]struct{}
+	// Embedders is a list of struct types with prefixed types
+	// embedded.
+	Embedders []Struct
+}
+
+// Struct is a representation of a struct type with embedded
+// types.
+type Struct struct {
+	Name    string
+	Pkg     string
+	PkgPath string
+	Refs    []PkgRef
 }
 
 // PkgRef is a reference to an identifier in a package.
 type PkgRef struct {
-	Pkg  string
 	Name string
+	Pkg  string
 }
 
 type refsSaver struct {
 	pkgPrefix string
-	References
-	refMap map[PkgRef]struct{}
+	*References
+	refMap       map[PkgRef]struct{}
+	insideStruct bool
 }
 
 // AnalyzeFile scans the provided file for references to packages with the given
@@ -81,7 +95,8 @@ func AnalyzeFile(file *ast.File, pkgPrefix string) (*References, error) {
 	// Ignore errors (from unknown packages)
 	pkg, _ := ast.NewPackage(fset, files, visitor.importer(), nil)
 	ast.Walk(visitor, pkg)
-	return &visitor.References, nil
+	visitor.findEmbeddingStructs("", pkg)
+	return visitor.References, nil
 }
 
 // AnalyzePackages scans the provided packages for references to packages with the given
@@ -103,14 +118,68 @@ func AnalyzePackages(pkgs []*build.Package, pkgPrefix string) (*References, erro
 		// Ignore errors (from unknown packages)
 		astpkg, _ := ast.NewPackage(fset, files, imp, nil)
 		ast.Walk(visitor, astpkg)
+		visitor.findEmbeddingStructs(pkg.ImportPath, astpkg)
 	}
-	return &visitor.References, nil
+	return visitor.References, nil
+}
+
+// findEmbeddingStructs finds all top level declarations embedding a prefixed type.
+//
+// For example:
+//
+// import "Prefix/some/Package"
+//
+// type T struct {
+//     Package.Class
+// }
+func (v *refsSaver) findEmbeddingStructs(pkgpath string, pkg *ast.Package) {
+	var names []string
+	for _, obj := range pkg.Scope.Objects {
+		if obj.Kind != ast.Typ || !ast.IsExported(obj.Name) {
+			continue
+		}
+		names = append(names, obj.Name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		obj := pkg.Scope.Objects[name]
+
+		t, ok := obj.Decl.(*ast.TypeSpec).Type.(*ast.StructType)
+		if !ok {
+			continue
+		}
+		var refs []PkgRef
+		for _, f := range t.Fields.List {
+			sel, ok := f.Type.(*ast.SelectorExpr)
+			if !ok {
+				continue
+			}
+			ref, ok := v.addRef(sel)
+			if !ok {
+				continue
+			}
+			if len(f.Names) > 0 && !f.Names[0].IsExported() {
+				continue
+			}
+			refs = append(refs, ref)
+		}
+		if len(refs) > 0 {
+			v.Embedders = append(v.Embedders, Struct{
+				Name:    obj.Name,
+				Pkg:     pkg.Name,
+				PkgPath: pkgpath,
+
+				Refs: refs,
+			})
+		}
+	}
 }
 
 func newRefsSaver(pkgPrefix string) *refsSaver {
 	s := &refsSaver{
-		pkgPrefix: pkgPrefix,
-		refMap:    make(map[PkgRef]struct{}),
+		pkgPrefix:  pkgPrefix,
+		refMap:     make(map[PkgRef]struct{}),
+		References: &References{},
 	}
 	s.Names = make(map[string]struct{})
 	return s
@@ -130,26 +199,47 @@ func (v *refsSaver) importer() ast.Importer {
 	}
 }
 
+func (v *refsSaver) addRef(sel *ast.SelectorExpr) (PkgRef, bool) {
+	x, ok := sel.X.(*ast.Ident)
+	if !ok || x.Obj == nil {
+		return PkgRef{}, false
+	}
+	imp, ok := x.Obj.Decl.(*ast.ImportSpec)
+	if !ok {
+		return PkgRef{}, false
+	}
+	pkgPath, err := strconv.Unquote(imp.Path.Value)
+	if err != nil {
+		return PkgRef{}, false
+	}
+	if !strings.HasPrefix(pkgPath, v.pkgPrefix) {
+		return PkgRef{}, false
+	}
+	pkgPath = pkgPath[len(v.pkgPrefix):]
+	ref := PkgRef{Pkg: pkgPath, Name: sel.Sel.Name}
+	if _, exists := v.refMap[ref]; !exists {
+		v.refMap[ref] = struct{}{}
+		v.Refs = append(v.Refs, ref)
+	}
+	return ref, true
+}
+
 func (v *refsSaver) Visit(n ast.Node) ast.Visitor {
 	switch n := n.(type) {
+	case *ast.StructType:
+		// Use a copy of refsSaver that only accepts exported fields. It refers
+		// to the original refsSaver for collecting references.
+		v2 := *v
+		v2.insideStruct = true
+		return &v2
+	case *ast.Field:
+		if v.insideStruct && len(n.Names) == 1 && !n.Names[0].IsExported() {
+			return nil
+		}
 	case *ast.SelectorExpr:
 		v.Names[n.Sel.Name] = struct{}{}
-		if x, ok := n.X.(*ast.Ident); ok && x.Obj != nil {
-			if imp, ok := x.Obj.Decl.(*ast.ImportSpec); ok {
-				pkgPath, err := strconv.Unquote(imp.Path.Value)
-				if err != nil {
-					return nil
-				}
-				if strings.HasPrefix(pkgPath, v.pkgPrefix) {
-					pkgPath = pkgPath[len(v.pkgPrefix):]
-					ref := PkgRef{Pkg: pkgPath, Name: n.Sel.Name}
-					if _, exists := v.refMap[ref]; !exists {
-						v.refMap[ref] = struct{}{}
-						v.Refs = append(v.Refs, ref)
-					}
-				}
-				return nil
-			}
+		if _, ok := v.addRef(n); ok {
+			return nil
 		}
 	case *ast.FuncDecl:
 		if n.Recv != nil { // Methods

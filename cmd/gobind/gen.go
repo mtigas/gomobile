@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/mobile/bind"
+	"golang.org/x/mobile/internal/importers"
 	"golang.org/x/mobile/internal/importers/java"
 )
 
@@ -140,15 +141,16 @@ func genPkg(p *types.Package, allPkg []*types.Package, classes []*java.Class) {
 	}
 }
 
-func genJavaPackages(ctx *build.Context, dir string, classes []*java.Class) error {
+func genJavaPackages(ctx *build.Context, dir string, classes []*java.Class, embedders []importers.Struct) error {
 	var buf bytes.Buffer
 	cg := &bind.ClassGen{
+		JavaPkg: *javaPkg,
 		Printer: &bind.Printer{
 			IndentEach: []byte("\t"),
 			Buf:        &buf,
 		},
 	}
-	cg.Init(classes)
+	cg.Init(classes, embedders)
 	pkgBase := filepath.Join(dir, "src", "Java")
 	if err := os.MkdirAll(pkgBase, 0700); err != nil {
 		return err
@@ -178,7 +180,8 @@ func genJavaPackages(ctx *build.Context, dir string, classes []*java.Class) erro
 		"-pkgdir="+filepath.Join(dir, "pkg", ctx.GOOS+"_"+ctx.GOARCH),
 		"Java/...",
 	)
-	cmd.Env = append(cmd.Env, "GOPATH="+dir)
+	cmd.Env = append(os.Environ(), "GOPATH="+dir)
+	cmd.Env = append(cmd.Env, "GOROOT="+ctx.GOROOT)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to go install the generated Java wrappers: %v: %s", err, string(out))
 	}

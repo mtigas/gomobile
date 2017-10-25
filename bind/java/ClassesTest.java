@@ -12,12 +12,13 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.Random;
 
-import go.javapkg.Javapkg;
-import go.javapkg.I;
-import go.javapkg.GoObject;
-import go.javapkg.GoRunnable;
-import go.javapkg.GoSubset;
-import go.javapkg.GoInputStream;
+import javapkg.Javapkg;
+import javapkg.I;
+import javapkg.GoObject;
+import javapkg.GoRunnable;
+import javapkg.GoSubset;
+import javapkg.GoInputStream;
+import javapkg.GoArrayList;
 
 public class ClassesTest extends InstrumentationTestCase {
 	public void testConst() {
@@ -114,12 +115,6 @@ public class ClassesTest extends InstrumentationTestCase {
 		assertEquals("IOException message", Javapkg.IOExceptionMessage, exc.getMessage());
 	}
 
-	public void testUnknownType() {
-		GoObject o = new GoObject();
-		o.toString(); // Set this
-		assertTrue("GoObject.getClass not null", o.checkClass());
-	}
-
 	public void testInnerClass() {
 		Character.Subset s = new Character.Subset(""){};
 		Character.Subset s2 = new GoSubset("");
@@ -153,5 +148,10 @@ public class ClassesTest extends InstrumentationTestCase {
 		assertTrue("Casting Go interface implementation", r3c != null);
 		Runnable r4c = Javapkg.castRunnable(new Object());
 		assertTrue("Invalid cast", r4c == null);
+	}
+
+	public void testUnwrap() {
+		GoArrayList l = new GoArrayList();
+		Javapkg.unwrapGoArrayList(l);
 	}
 }

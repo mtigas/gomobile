@@ -22,14 +22,14 @@ func TestImport(t *testing.T) {
 		methods []*Func
 	}{
 		{
-			ref:  importers.PkgRef{"Foundation/NSObjectP", "Hash"},
+			ref:  importers.PkgRef{Pkg: "Foundation/NSObjectP", Name: "Hash"},
 			name: "NSObject",
 			methods: []*Func{
 				&Func{Sig: "hash", GoName: "Hash", Ret: &Type{Kind: Uint, Decl: "NSUInteger"}},
 			},
 		},
 		{
-			ref:  importers.PkgRef{"Foundation/NSString", "StringWithContentsOfFileEncodingError"},
+			ref:  importers.PkgRef{Pkg: "Foundation/NSString", Name: "StringWithContentsOfFileEncodingError"},
 			name: "NSString",
 			methods: []*Func{
 				&Func{
@@ -58,8 +58,8 @@ func TestImport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(types) != 1 {
-			t.Fatalf("got %d types, expected 1", len(types))
+		if len(types) == 0 {
+			t.Fatalf("got no types, expected at least 1")
 		}
 		n := types[0]
 		if n.Name != test.name {
@@ -67,7 +67,7 @@ func TestImport(t *testing.T) {
 		}
 	loop:
 		for _, exp := range test.methods {
-			for _, got := range n.Methods {
+			for _, got := range n.AllMethods {
 				if reflect.DeepEqual(exp, got) {
 					continue loop
 				}

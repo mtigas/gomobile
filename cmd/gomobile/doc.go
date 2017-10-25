@@ -56,7 +56,7 @@ the module import wizard (File > New > New Module > Import .JAR or
 (version 1.7+) and Android SDK (API level 15 or newer) to build the
 library for Android. The environment variable ANDROID_HOME must be set
 to the path to Android SDK. The generated Java class is in the java
-package 'go.<package_name>' unless -javapkg flag is specified.
+package '<package_name>' unless -javapkg flag is specified.
 
 By default, -target=android builds shared libraries for all supported
 instruction sets (arm, arm64, 386, amd64). A subset of instruction sets
@@ -64,8 +64,8 @@ can be selected by specifying target type with the architecture name. E.g.,
 -target=android/arm,android/386.
 
 For -target ios, gomobile must be run on an OS X machine with Xcode
-installed. Support is not complete. The generated Objective-C types
-are prefixed with 'Go' unless the -prefix flag is provided.
+installed. Support is not complete. The -prefix flag can be used to prefix
+the names of generated Objective-C types.
 
 The -v flag provides verbose output, including the list of packages built.
 
@@ -123,15 +123,20 @@ Usage:
 
 	gomobile init [-u]
 
-Init installs the Android C++ compiler toolchain and builds copies
-of the Go standard library for mobile devices.
+Init builds copies of the Go standard library for mobile devices. If ANDROID_HOME
+is set and the Android NDK is available, Android support is built. If on Darwin
+and the Xcode command line utilities are installed, iOS support is built.
 
-When first run, it downloads part of the Android NDK.
-The toolchain is installed in $GOPATH/pkg/gomobile.
+The toolchains are installed in $GOPATH/pkg/gomobile.
 
-The -u option forces download and installation of the new toolchain
-even when the toolchain exists.
+Init use the Android NDK installed by the Android SDK manager by default. Use the
+-ndk flag to specify a custom location for the NDK.
 
+If the -openal flag is specified, init also builds an Android version of OpenAL
+from the source directory given. OpenAL enables support for gomobile build and
+install with mobile apps using the golang.org/x/mobile/exp/audio/al package.
+It needs cmake and, on Windows, nmake installed. If cmake is installed through
+the Android SDK manager, init will use that.
 
 Compile android APK and install on device
 
@@ -181,6 +186,15 @@ create a gradle subproject and configure the gobind plugin in the build.gradle f
 
 		// Optionally, set the absolute path to the gomobile binary.
 		// GOMOBILE = "/path/to/gomobile"
+
+		// Pass extra parameters to command line. Optional.
+		// GOMOBILEFLAGS="-javapkg my.java.package"
+
+		// Absolute path to the gobind binary. Optional.
+		// GOBIND="/path/to/gobind"
+
+		// Optional list of architectures. Defaults to all supported architectures.
+		// GOARCH="arm amd64"
 	}
 
 The direct integration mode is suitable for Go packages that import Java API, Android API,

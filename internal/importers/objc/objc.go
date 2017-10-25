@@ -23,11 +23,14 @@ import (
 )
 
 type parser struct {
-	sc *bufio.Scanner
+	sdkPath string
+	sc      *bufio.Scanner
 
 	decl   string
 	indent int
 	last   string
+	// Current module as parsed from the AST tree.
+	module string
 }
 
 type TypeKind int
@@ -45,6 +48,9 @@ type Named struct {
 	// declarations.
 	funcMap  map[string]struct{}
 	Protocol bool
+	// Generated is true if the type is wrapper of a
+	// generated Go struct.
+	Generated bool
 }
 
 // Super denotes a super class or protocol.
@@ -111,6 +117,10 @@ func Import(refs *importers.References) ([]*Named, error) {
 	modMap := make(map[string]struct{})
 	typeNames := make(map[string][]string)
 	typeSet := make(map[string]struct{})
+	genMods := make(map[string]struct{})
+	for _, emb := range refs.Embedders {
+		genMods[initialUpper(emb.Pkg)] = struct{}{}
+	}
 	for _, ref := range refs.Refs {
 		var module, name string
 		if idx := strings.Index(ref.Pkg, "/"); idx != -1 {
@@ -122,31 +132,106 @@ func Import(refs *importers.References) ([]*Named, error) {
 			module = ref.Pkg
 			name = ref.Name
 		}
-		fullName := module + "." + name
-		if _, exists := typeSet[fullName]; !exists {
+		if _, exists := typeSet[name]; !exists {
 			typeNames[module] = append(typeNames[module], name)
-			typeSet[fullName] = struct{}{}
+			typeSet[name] = struct{}{}
 		}
 		if _, exists := modMap[module]; !exists {
-			modMap[module] = struct{}{}
-			modules = append(modules, module)
+			// Include the module only if it is generated.
+			if _, exists := genMods[module]; !exists {
+				modMap[module] = struct{}{}
+				modules = append(modules, module)
+			}
 		}
 	}
+	sdkPathOut, err := exec.Command("xcrun", "--sdk", "iphonesimulator", "--show-sdk-path").CombinedOutput()
+	if err != nil {
+		return nil, err
+	}
+	sdkPath := strings.TrimSpace(string(sdkPathOut))
 	var allTypes []*Named
 	typeMap := make(map[string]*Named)
 	for _, module := range modules {
-		types, err := importModule(module, typeNames[module], typeMap)
+		types, err := importModule(string(sdkPath), module, typeNames[module], typeMap)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %v", module, err)
 		}
 		allTypes = append(allTypes, types...)
 	}
-	for _, t := range allTypes {
+	// Embedders refer to every exported Go struct that will have its class
+	// generated. Allow Go code to reverse bind to those classes by synthesizing
+	// their descriptors.
+	for _, emb := range refs.Embedders {
+		module := initialUpper(emb.Pkg)
+		named := &Named{
+			Name:      module + emb.Name,
+			GoName:    emb.Name,
+			Module:    module,
+			Generated: true,
+		}
+		for _, ref := range emb.Refs {
+			t, exists := typeMap[ref.Name]
+			if !exists {
+				return nil, fmt.Errorf("type not found: %q", ref.Name)
+			}
+			named.Supers = append(named.Supers, Super{
+				Name:     t.Name,
+				Protocol: t.Protocol,
+			})
+		}
+		typeMap[emb.Name] = named
+		allTypes = append(allTypes, named)
+	}
+	initTypes(allTypes, refs, typeMap)
+	// Include implicit types that are used in parameter or return values.
+	newTypes := allTypes
+	for len(newTypes) > 0 {
+		var impTypes []*Named
+		for _, t := range newTypes {
+			for _, funcs := range [][]*Func{t.Funcs, t.AllMethods} {
+				for _, f := range funcs {
+					types := implicitFuncTypes(f)
+					for _, name := range types {
+						if _, exists := typeSet[name]; exists {
+							continue
+						}
+						typeSet[name] = struct{}{}
+						t, exists := typeMap[name]
+						if !exists {
+							return nil, fmt.Errorf("implicit type %q not found", name)
+						}
+						impTypes = append(impTypes, t)
+					}
+				}
+			}
+		}
+		initTypes(impTypes, refs, typeMap)
+		allTypes = append(allTypes, impTypes...)
+		newTypes = impTypes
+	}
+	return allTypes, nil
+}
+
+func implicitFuncTypes(f *Func) []string {
+	var types []string
+	if rt := f.Ret; rt != nil && !rt.instanceType && (rt.Kind == Class || rt.Kind == Protocol) {
+		types = append(types, rt.Name)
+	}
+	for _, p := range f.Params {
+		if t := p.Type; !t.instanceType && (t.Kind == Class || t.Kind == Protocol) {
+			types = append(types, t.Name)
+		}
+	}
+	return types
+}
+
+func initTypes(types []*Named, refs *importers.References, typeMap map[string]*Named) {
+	for _, t := range types {
 		fillAllMethods(t, typeMap)
 	}
 	// Move constructors to functions. They are represented in Go
 	// as functions.
-	for _, t := range allTypes {
+	for _, t := range types {
 		var methods []*Func
 		for _, f := range t.AllMethods {
 			if f.Constructor {
@@ -158,16 +243,15 @@ func Import(refs *importers.References) ([]*Named, error) {
 		}
 		t.AllMethods = methods
 	}
-	for _, t := range allTypes {
+	for _, t := range types {
 		mangleMethodNames(t.AllMethods)
 		mangleMethodNames(t.Funcs)
 	}
-	filterReferences(allTypes, refs, typeMap)
-	for _, t := range allTypes {
+	filterReferences(types, refs, typeMap)
+	for _, t := range types {
 		resolveInstanceTypes(t, t.Funcs)
 		resolveInstanceTypes(t, t.AllMethods)
 	}
-	return allTypes, nil
 }
 
 func filterReferences(types []*Named, refs *importers.References, typeMap map[string]*Named) {
@@ -218,12 +302,16 @@ func mangleMethodNames(allFuncs []*Func) {
 		return initialUpper(n)
 	}
 	overloads := make(map[string][]*Func)
-	for _, f := range allFuncs {
+	for i, f := range allFuncs {
+		// Copy function so each class can have its own
+		// name mangling.
+		f := *f
+		allFuncs[i] = &f
 		f.GoName = goName(f.Sig, f.Constructor)
 		if colon := strings.Index(f.GoName, ":"); colon != -1 {
 			f.GoName = f.GoName[:colon]
 		}
-		overloads[f.GoName] = append(overloads[f.GoName], f)
+		overloads[f.GoName] = append(overloads[f.GoName], &f)
 	}
 	fallbacks := make(map[string][]*Func)
 	for _, funcs := range overloads {
@@ -302,10 +390,7 @@ func fillAllMethods(n *Named, typeMap map[string]*Named) {
 		for _, f := range super.AllMethods {
 			if _, exists := methods[f.Sig]; !exists {
 				methods[f.Sig] = struct{}{}
-				// Copy function so each class can have its own
-				// name mangling.
-				cpf := *f
-				n.AllMethods = append(n.AllMethods, &cpf)
+				n.AllMethods = append(n.AllMethods, f)
 			}
 		}
 	}
@@ -316,20 +401,25 @@ func fillAllMethods(n *Named, typeMap map[string]*Named) {
 	}
 }
 
+const (
+	frameworksPath = "/System/Library/Frameworks/"
+)
+
 // importModule parses ObjC type information with clang -cc1 -ast-dump.
 //
 // TODO: Use module.map files to precisely model the @import Module.Identifier
 // directive. For now, importModules assumes the single umbrella header
 // file Module.framework/Headers/Module.h contains every declaration.
-func importModule(module string, identifiers []string, typeMap map[string]*Named) ([]*Named, error) {
-	hFile := fmt.Sprintf("/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/Frameworks/%s.framework/Headers/%[1]s.h", module)
-	clang := exec.Command("clang", "-cc1", "-isysroot", "/Applications/Xcode.app/Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk", "-ast-dump", "-fblocks", "-fobjc-arc", "-x", "objective-c", hFile)
+func importModule(sdkPath, module string, identifiers []string, typeMap map[string]*Named) ([]*Named, error) {
+	hFile := fmt.Sprintf(sdkPath+frameworksPath+"%s.framework/Headers/%[1]s.h", module)
+	clang := exec.Command("xcrun", "--sdk", "iphonesimulator", "clang", "-cc1", "-isysroot", sdkPath, "-ast-dump", "-fblocks", "-fobjc-arc", "-x", "objective-c", hFile)
 	out, err := clang.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("clang failed to parse module: %s: %v", module, err)
+		return nil, fmt.Errorf("clang failed to parse module: %v: %s", err, out)
 	}
 	p := &parser{
-		sc: bufio.NewScanner(bytes.NewBuffer(out)),
+		sdkPath: sdkPath,
+		sc:      bufio.NewScanner(bytes.NewBuffer(out)),
 	}
 	if err := p.parseModule(module, typeMap); err != nil {
 		return nil, err
@@ -340,7 +430,6 @@ func importModule(module string, identifiers []string, typeMap map[string]*Named
 		if !exists {
 			return nil, fmt.Errorf("no such type: %s", ident)
 		}
-		named.Module = module
 		types = append(types, named)
 	}
 	return types, nil
@@ -385,7 +474,7 @@ func (p *parser) parseModule(module string, typeMap map[string]*Named) (err erro
 	//
 	// TranslationUnitDecl 0x103833ad0 <<invalid sloc>> <invalid sloc>
 	if w := p.scanWord(); w != "TranslationUnitDecl" {
-		return fmt.Errorf("unexpected AST root: %s", w)
+		return fmt.Errorf("unexpected AST root: %q", w)
 	}
 	p.indent++
 	for {
@@ -398,8 +487,7 @@ func (p *parser) parseModule(module string, typeMap map[string]*Named) (err erro
 			// |-ObjCInterface 0x103d9a788 'NSDate'
 			// Skip the node address, the source code range, position.
 			p.scanWord()
-			p.skipSrcRange()
-			p.skipSrcPos()
+			p.parseLocation()
 			catName := p.scanWord()
 			p.indent++
 			if !p.scanLine() {
@@ -429,8 +517,7 @@ func (p *parser) parseModule(module string, typeMap map[string]*Named) (err erro
 				p.scanWord()
 				p.scanWord()
 			}
-			p.skipSrcRange()
-			p.skipSrcPos()
+			p.parseLocation()
 			if strings.HasPrefix(p.decl, "implicit ") {
 				p.scanWord()
 			}
@@ -491,6 +578,7 @@ func (p *parser) lookupOrCreate(name string, prot bool, typeMap map[string]*Name
 	named.Name = name
 	named.Protocol = prot
 	named.funcMap = make(map[string]struct{})
+	named.Module = p.module
 	typeMap[named.GoName] = named
 	return named
 }
@@ -545,8 +633,7 @@ func (p *parser) parseMethod() *Func {
 
 	// Skip the address, range, position.
 	p.scanWord()
-	p.skipSrcRange()
-	p.skipSrcPos()
+	p.parseLocation()
 	if strings.HasPrefix(p.decl, "implicit") {
 		p.scanWord()
 	}
@@ -590,8 +677,7 @@ func (p *parser) parseParameter() *Param {
 
 	// Skip address, source range, position.
 	p.scanWord()
-	p.skipSrcRange()
-	p.skipSrcPos()
+	p.parseLocation()
 	return &Param{Name: p.scanWord(), Type: p.parseType()}
 }
 
@@ -682,33 +768,79 @@ func (p *parser) splitGeneric(decl string) (string, string) {
 	}
 }
 
-func (p *parser) skipSrcPos() {
-	if strings.HasPrefix(p.decl, "<") {
-		end := strings.Index(p.decl, ">")
-		p.decl = p.decl[end+1:]
+func (p *parser) parseSrcPos() {
+	const invPref = "<invalid sloc>"
+	if strings.HasPrefix(p.decl, invPref) {
+		p.decl = p.decl[len(invPref):]
+		return
 	}
-	p.scanWord()
+	// line:17:2, col:18 or, a file location:
+	// /.../UIKit.framework/Headers/UISelectionFeedbackGenerator.h:16:1
+	loc := p.scanWord()
+	locs := strings.SplitN(loc, ":", 2)
+	if len(locs) != 2 && len(locs) != 3 {
+		panic(fmt.Errorf("invalid source position: %q", loc))
+	}
+	switch loc := locs[0]; loc {
+	case "line", "col":
+	default:
+		if !strings.HasPrefix(loc, p.sdkPath) {
+			panic(fmt.Errorf("invalid source position: %q", loc))
+		}
+		loc = loc[len(p.sdkPath):]
+		switch {
+		case strings.HasPrefix(loc, "/usr/include/objc/"):
+			p.module = "Foundation"
+		case strings.HasPrefix(loc, frameworksPath):
+			loc = loc[len(frameworksPath):]
+			i := strings.Index(loc, ".framework")
+			if i == -1 {
+				panic(fmt.Errorf("invalid source position: %q", loc))
+			}
+			p.module = loc[:i]
+			// Some types are declared in CoreFoundation.framework
+			// even though they belong in Foundation in Objective-C.
+			if p.module == "CoreFoundation" {
+				p.module = "Foundation"
+			}
+		default:
+		}
+	}
 }
 
-func (p *parser) skipSrcRange() {
-	if p.decl[0] != '<' {
+func (p *parser) parseLocation() {
+	// Source ranges are on the form: <line:17:29, line:64:2>.
+	if !strings.HasPrefix(p.decl, "<") {
+		panic(fmt.Errorf("1no source range first in %s", p.decl))
+	}
+	p.decl = p.decl[1:]
+	p.parseSrcPos()
+	if strings.HasPrefix(p.decl, ", ") {
+		p.decl = p.decl[2:]
+		p.parseSrcPos()
+	}
+	if !strings.HasPrefix(p.decl, "> ") {
 		panic(fmt.Errorf("no source range first in %s", p.decl))
 	}
-	// Source ranges are on the form: <line:17:29, line:64:2>.
-	posEnd := strings.Index(p.decl, "> ")
-	p.decl = p.decl[posEnd+2:]
+	p.decl = p.decl[2:]
+	p.parseSrcPos()
 }
 
 func (p *parser) scanWord() string {
-	if end := strings.Index(p.decl, " "); end != -1 {
-		w := p.decl[:end]
-		p.decl = p.decl[end+1:]
-		return w
-	} else {
-		w := p.decl
-		p.decl = ""
-		return w
+	i := 0
+loop:
+	for ; i < len(p.decl); i++ {
+		switch p.decl[i] {
+		case ' ', '>', ',':
+			break loop
+		}
 	}
+	w := p.decl[:i]
+	p.decl = p.decl[i:]
+	for len(p.decl) > 0 && p.decl[0] == ' ' {
+		p.decl = p.decl[1:]
+	}
+	return w
 }
 
 func initialUpper(s string) string {

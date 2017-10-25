@@ -6,10 +6,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/build"
 	"go/importer"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"io"
@@ -91,11 +93,19 @@ func runBind(cmd *command) error {
 	ctx.GOARCH = "arm"
 	ctx.GOOS = targetOS
 
+	if ctx.GOOS == "darwin" {
+		ctx.BuildTags = append(ctx.BuildTags, "ios")
+	}
+
 	if bindJavaPkg != "" && ctx.GOOS != "android" {
 		return fmt.Errorf("-javapkg is supported only for android target")
 	}
 	if bindPrefix != "" && ctx.GOOS != "darwin" {
 		return fmt.Errorf("-prefix is supported only for ios target")
+	}
+
+	if ctx.GOOS == "android" && ndkRoot == "" {
+		return errors.New("no Android NDK path is set. Please run gomobile init with the ndk-bundle installed through the Android SDK manager or with the -ndk flag set.")
 	}
 
 	var pkgs []*build.Package
@@ -130,10 +140,11 @@ func runBind(cmd *command) error {
 
 func importPackages(args []string) ([]*build.Package, error) {
 	pkgs := make([]*build.Package, len(args))
-	for i, path := range args {
+	for i, a := range args {
+		a = path.Clean(a)
 		var err error
-		if pkgs[i], err = ctx.Import(path, cwd, build.ImportComment); err != nil {
-			return nil, fmt.Errorf("package %q: %v", path, err)
+		if pkgs[i], err = ctx.Import(a, cwd, build.ImportComment); err != nil {
+			return nil, fmt.Errorf("package %q: %v", a, err)
 		}
 	}
 	return pkgs, nil
@@ -149,9 +160,9 @@ var (
 func init() {
 	// bind command specific commands.
 	cmdBind.flag.StringVar(&bindJavaPkg, "javapkg", "",
-		"specifies custom Java package path prefix used instead of the default 'go'. Valid only with -target=android.")
+		"specifies custom Java package path prefix. Valid only with -target=android.")
 	cmdBind.flag.StringVar(&bindPrefix, "prefix", "",
-		"custom Objective-C name prefix used instead of the default 'Go'. Valid only with -target=ios.")
+		"custom Objective-C name prefix. Valid only with -target=ios.")
 	cmdBind.flag.StringVar(&bindClasspath, "classpath", "", "The classpath for imported Java classes. Valid only with -target=android.")
 	cmdBind.flag.StringVar(&bindBootClasspath, "bootclasspath", "", "The bootstrap classpath for imported Java classes. Valid only with -target=android.")
 }
@@ -187,10 +198,9 @@ func (b *binder) GenObjcSupport(outdir string) error {
 	return copyFile(filepath.Join(outdir, "seq.h"), filepath.Join(objcPkg.Dir, "seq.h"))
 }
 
-func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir string, wrappers []*objc.Named) (string, error) {
-	const bindPrefixDefault = "Go"
-	if bindPrefix == "" || pkg == nil {
-		bindPrefix = bindPrefixDefault
+func (b *binder) GenObjc(pkg *types.Package, files []*ast.File, allPkg []*types.Package, outdir string, wrappers []*objc.Named) (string, error) {
+	if pkg == nil {
+		bindPrefix = ""
 	}
 	pkgName := ""
 	pkgPath := ""
@@ -201,13 +211,13 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 		pkgName = "universe"
 	}
 	bindOption := "-lang=objc"
-	if bindPrefix != bindPrefixDefault {
-		bindOption += " -prefix=" + bindPrefix
+	if bindPrefix != "" {
+		bindOption += fmt.Sprintf(" -prefix=%q", bindPrefix)
 	}
 
 	fileBase := bindPrefix + strings.Title(pkgName)
 	mfile := filepath.Join(outdir, fileBase+".m")
-	hfile := filepath.Join(outdir, fileBase+".h")
+	hfile := filepath.Join(outdir, fileBase+".objc.h")
 	gohfile := filepath.Join(outdir, pkgName+".h")
 
 	var buf bytes.Buffer
@@ -217,6 +227,7 @@ func (b *binder) GenObjc(pkg *types.Package, allPkg []*types.Package, outdir str
 			Fset:    b.fset,
 			AllPkg:  allPkg,
 			Pkg:     pkg,
+			Files:   files,
 		},
 		Prefix: bindPrefix,
 	}
@@ -312,7 +323,11 @@ func GenObjcWrappers(pkgs []*build.Package, srcDir, pkgGen string) ([]*objc.Name
 			Buf:        &buf,
 		},
 	}
-	g.Init(types)
+	var genNames []string
+	for _, emb := range refs.Embedders {
+		genNames = append(genNames, emb.Name)
+	}
+	g.Init(types, genNames)
 	for i, name := range g.Packages() {
 		pkgDir := filepath.Join(pkgGen, "src", "ObjC", name)
 		if err := os.MkdirAll(pkgDir, 0700); err != nil {
@@ -392,18 +407,24 @@ func GenClasses(pkgs []*build.Package, srcDir, jpkgSrc string) ([]*java.Class, e
 	if err != nil {
 		return nil, err
 	}
-	classes, err := java.Import(bClspath, bindClasspath, refs)
+	imp := &java.Importer{
+		Bootclasspath: bClspath,
+		Classpath:     bindClasspath,
+		JavaPkg:       bindJavaPkg,
+	}
+	classes, err := imp.Import(refs)
 	if err != nil {
 		return nil, err
 	}
 	var buf bytes.Buffer
 	g := &bind.ClassGen{
+		JavaPkg: bindJavaPkg,
 		Printer: &bind.Printer{
 			IndentEach: []byte("\t"),
 			Buf:        &buf,
 		},
 	}
-	g.Init(classes)
+	g.Init(classes, refs.Embedders)
 	for i, jpkg := range g.Packages() {
 		pkgDir := filepath.Join(jpkgSrc, "src", "Java", jpkg)
 		if err := os.MkdirAll(pkgDir, 0700); err != nil {
@@ -474,18 +495,16 @@ func GenClasses(pkgs []*build.Package, srcDir, jpkgSrc string) ([]*java.Class, e
 	return classes, nil
 }
 
-func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, classes []*java.Class, outdir, androidDir string) error {
+func (b *binder) GenJava(pkg *types.Package, files []*ast.File, allPkg []*types.Package, classes []*java.Class, outdir, androidDir string) error {
 	jpkgname := bind.JavaPkgName(bindJavaPkg, pkg)
 	javadir := filepath.Join(androidDir, strings.Replace(jpkgname, ".", "/", -1))
 	var className string
 	pkgName := ""
 	pkgPath := ""
-	javaPkg := ""
 	if pkg != nil {
 		className = strings.Title(pkg.Name())
 		pkgName = pkg.Name()
 		pkgPath = pkg.Path()
-		javaPkg = bindJavaPkg
 	} else {
 		pkgName = "universe"
 		className = "Universe"
@@ -494,18 +513,19 @@ func (b *binder) GenJava(pkg *types.Package, allPkg []*types.Package, classes []
 	cFile := filepath.Join(outdir, "java_"+pkgName+".c")
 	hFile := filepath.Join(outdir, pkgName+".h")
 	bindOption := "-lang=java"
-	if javaPkg != "" {
-		bindOption += " -javapkg=" + javaPkg
+	if bindJavaPkg != "" {
+		bindOption += " -javapkg=" + bindJavaPkg
 	}
 
 	var buf bytes.Buffer
 	g := &bind.JavaGen{
-		JavaPkg: javaPkg,
+		JavaPkg: bindJavaPkg,
 		Generator: &bind.Generator{
 			Printer: &bind.Printer{Buf: &buf, IndentEach: []byte("    ")},
 			Fset:    b.fset,
 			AllPkg:  allPkg,
 			Pkg:     pkg,
+			Files:   files,
 		},
 	}
 	g.Init(classes)
@@ -701,6 +721,24 @@ func loadExportData(pkgs []*build.Package, env []string, args ...string) ([]*typ
 		typePkgs[i] = p
 	}
 	return typePkgs, nil
+}
+
+func parse(pkgs []*build.Package) ([][]*ast.File, error) {
+	fset := token.NewFileSet()
+	var astPkgs [][]*ast.File
+	for _, pkg := range pkgs {
+		fileNames := append(append([]string{}, pkg.GoFiles...), pkg.CgoFiles...)
+		var files []*ast.File
+		for _, name := range fileNames {
+			f, err := parser.ParseFile(fset, filepath.Join(pkg.Dir, name), nil, parser.ParseComments)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, f)
+		}
+		astPkgs = append(astPkgs, files)
+	}
+	return astPkgs, nil
 }
 
 func newBinder(pkgs []*types.Package) (*binder, error) {

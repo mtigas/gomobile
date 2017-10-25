@@ -2,26 +2,37 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package reverse implements an Android in Go
+// Package reverse implements an Android app in 100% Go.
+
+// +build android
+
 package reverse
 
 import (
 	"Java/android/databinding/DataBindingUtil"
 	"Java/android/os"
 	"Java/android/support/v7/app"
-	rlayout "Java/go/reverse/R/layout"
-	"Java/go/reverse/databinding/ActivityMainBinding"
+	gopkg "Java/reverse"
+	rlayout "Java/reverse/R/layout"
+	"Java/reverse/databinding"
+	"Java/reverse/databinding/ActivityMainBinding"
 )
 
 type MainActivity struct {
 	app.AppCompatActivity
+	binding databinding.ActivityMainBinding
 }
 
-func (a *MainActivity) OnCreate1(this app.AppCompatActivity, b os.Bundle) {
-	this.Super().OnCreate1(b)
-	db := DataBindingUtil.SetContentView2(this, rlayout.Activity_main)
-	mainBind := ActivityMainBinding.Cast(db)
-	mainBind.SetAct(this)
+func (a *MainActivity) OnCreate(this gopkg.MainActivity, b os.Bundle) {
+	this.Super().OnCreate(b)
+	db := DataBindingUtil.SetContentView(this, rlayout.Activity_main)
+	a.binding = ActivityMainBinding.Cast(db)
+	a.binding.SetAct(this)
+}
+
+func (a *MainActivity) OnDestroy(this gopkg.MainActivity) {
+	a.binding = nil // break reference cycle
+	this.Super().OnDestroy()
 }
 
 func (a *MainActivity) GetLabel() string {

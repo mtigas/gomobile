@@ -2,10 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build ios
+
 package objcpkg
 
 import (
 	"ObjC/Foundation"
+	gopkg "ObjC/Objcpkg"
 	"ObjC/UIKit"
 )
 
@@ -18,11 +21,11 @@ type GoNSDate struct {
 	Foundation.NSDate
 }
 
-func (d *GoNSDate) Hash(self Foundation.NSDate) int {
+func (d *GoNSDate) Hash(self gopkg.GoNSDate) int {
 	return Hash
 }
 
-func (d *GoNSDate) Description(self Foundation.NSDate) string {
+func (d *GoNSDate) Description(self gopkg.GoNSDate) string {
 	// Test self call
 	if h := self.Hash(); h != Hash {
 		panic("hash mismatch")
@@ -30,7 +33,7 @@ func (d *GoNSDate) Description(self Foundation.NSDate) string {
 	return DescriptionStr
 }
 
-func (d *GoNSDate) GetSelf(self Foundation.NSDate) Foundation.NSDate {
+func (d *GoNSDate) GetSelf(self gopkg.GoNSDate) Foundation.NSDate {
 	return self
 }
 
@@ -44,7 +47,7 @@ type GoNSObject struct {
 	UseSelf bool
 }
 
-func (o *GoNSObject) Description(self Foundation.NSObjectC) string {
+func (o *GoNSObject) Description(self gopkg.GoNSObject) string {
 	if o.UseSelf {
 		return DescriptionStr
 	} else {
@@ -63,4 +66,9 @@ type GoUIResponder struct {
 
 func (r *GoUIResponder) PressesBegan(_ Foundation.NSSet, _ UIKit.UIPressesEvent) {
 	r.Called = true
+}
+
+// Check that implicitly referenced types are wrapped.
+func implicitType(r UIKit.UIResponder) {
+	r.MotionBegan(0, nil)
 }

@@ -17,6 +17,7 @@ import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.compile.JavaCompile
 
 import org.golang.mobile.OutputFileTask
 import org.golang.mobile.AARPublishArtifact
@@ -75,7 +76,7 @@ class GobindPlugin implements Plugin<Project> {
 		// First, generate the Java classes with the gobind tool.
 		Task bindTask = project.tasks.create("gobind${variant.name.capitalize()}", GobindTask)
 		bindTask.outputDir = outputDir
-		bindTask.classpath = variant.javaCompile.classpath
+		bindTask.javaCompile = variant.javaCompile
 		bindTask.bootClasspath = variant.javaCompile.options.bootClasspath
 		// TODO: Detect when updating the Java classes is redundant.
 		bindTask.outputs.upToDateWhen { false }
@@ -83,8 +84,7 @@ class GobindPlugin implements Plugin<Project> {
 		// Then, generate the JNI libraries with the gomobile tool.
 		Task libTask = project.tasks.create("gomobile${variant.name.capitalize()}", GomobileTask)
 		libTask.bootClasspath = variant.javaCompile.options.bootClasspath
-		// Add the R and databinding classes to the gomobile classpath.
-		libTask.classpath = project.files(variant.javaCompile.classpath, variant.javaCompile.destinationDir)
+		libTask.javaCompile = variant.javaCompile
 		// Dump the JNI libraries in the known project jniLibs directory.
 		// TODO: Use a directory below build for the libraries instead. Adding a jni directory to the jniLibs
 		// property of android.sourceSets only works, but only if the directory changes every build.
@@ -153,6 +153,7 @@ class BindTask extends DefaultTask {
 				throw new GradleException('Neither sdk.dir or ANDROID_HOME is set')
 			}
 			environment("GOPATH", gopath)
+			environment("GOOS", "android")
 			environment("PATH", paths.join(File.pathSeparator))
 			environment("ANDROID_HOME", androidHome)
 		}
@@ -189,11 +190,11 @@ class GobindTask extends BindTask {
 	@OutputDirectory
 	File outputDir
 
-	FileCollection classpath
+	JavaCompile javaCompile
 
 	@TaskAction
 	def gobind() {
-		run("gobind", project.gobind.GOBIND, ["-lang", "java", "-classpath", classpath.join(File.pathSeparator), "-outdir", outputDir.getAbsolutePath()])
+		run("gobind", project.gobind.GOBIND, ["-lang", "java", "-classpath", javaCompile.classpath.join(File.pathSeparator), "-outdir", outputDir.getAbsolutePath()])
 	}
 }
 
@@ -206,7 +207,7 @@ class GomobileTask extends BindTask implements OutputFileTask {
 	@OutputDirectory
 	File libsDir
 
-	FileCollection classpath
+	JavaCompile javaCompile
 
 	@TaskAction
 	def gomobile() {
@@ -214,7 +215,9 @@ class GomobileTask extends BindTask implements OutputFileTask {
 			outputFile = File.createTempFile("gobind-", ".aar")
 		}
 		def cmd = ["bind", "-i"]
-		if (classpath) {
+		// Add the generated R and databinding classes to the classpath.
+		if (javaCompile) {
+			def classpath = project.files(javaCompile.classpath, javaCompile.destinationDir)
 			cmd << "-classpath"
 			cmd << classpath.join(File.pathSeparator)
 		}

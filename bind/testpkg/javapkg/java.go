@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// +build android
+
 package javapkg
 
 import (
@@ -30,7 +32,7 @@ func IntegerBytes() int {
 }
 
 func IntegerValueOf(v int32) int32 {
-	i := Integer.ValueOf_I(v)
+	i, _ := Integer.ValueOf(v)
 	return i.IntValue()
 }
 
@@ -45,7 +47,7 @@ func IntegerDecode(v string) (int32, error) {
 }
 
 func IntegerParseInt(v string, radix int32) (int32, error) {
-	return Integer.ParseInt2(v, radix)
+	return Integer.ParseInt(v, radix)
 }
 
 func ProvokeRuntimeException() (err error) {

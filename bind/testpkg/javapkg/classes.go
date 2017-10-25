@@ -15,8 +15,12 @@ import (
 	"Java/java/lang/Integer"
 	"Java/java/lang/Object"
 	"Java/java/lang/Runnable"
+	"Java/java/net"
+	"Java/java/nio"
 	"Java/java/util"
 	"Java/java/util/concurrent"
+	gopkg "Java/javapkg"
+	xnet "Java/javax/net"
 )
 
 const (
@@ -32,14 +36,14 @@ type GoRunnable struct {
 	Field string
 }
 
-func (r *GoRunnable) ToString(this lang.Runnable) string {
+func (r *GoRunnable) ToString(this gopkg.GoRunnable) string {
 	return ToStringPrefix
 }
 
-func (r *GoRunnable) Run(this lang.Runnable) {
+func (r *GoRunnable) Run(this gopkg.GoRunnable) {
 }
 
-func (r *GoRunnable) GetThis(this lang.Runnable) lang.Runnable {
+func (r *GoRunnable) GetThis(this gopkg.GoRunnable) lang.Runnable {
 	return this
 }
 
@@ -48,7 +52,7 @@ type GoInputStream struct {
 }
 
 func (_ *GoInputStream) Read() (int32, error) {
-	return 0, IOException.New_Ljava_lang_String_2(IOExceptionMessage)
+	return 0, IOException.New(IOExceptionMessage)
 }
 
 func NewGoInputStream() *GoInputStream {
@@ -63,12 +67,13 @@ func (_ *GoFuture) Cancel(_ bool) bool {
 	return false
 }
 
-func (_ *GoFuture) Get() lang.Object {
-	return nil
+func (_ *GoFuture) Get() (lang.Object, error) {
+	return nil, nil
 }
 
-func (_ *GoFuture) Get2(_ int64, _ concurrent.TimeUnit) lang.Object {
-	return nil
+// Use a trailing underscore to override multiple overloaded methods.
+func (_ *GoFuture) Get_(_ int64, _ concurrent.TimeUnit) (lang.Object, error) {
+	return nil, nil
 }
 
 func (_ *GoFuture) IsCancelled() bool {
@@ -84,17 +89,9 @@ type GoObject struct {
 	this lang.Object
 }
 
-func (o *GoObject) ToString(this lang.Object) string {
+func (o *GoObject) ToString(this gopkg.GoObject) string {
 	o.this = this
 	return ToStringPrefix + this.Super().ToString()
-}
-
-func (r *GoObject) CheckClass() bool {
-	// Verify that GetClass returns interface{} because java.lang.Class
-	// is unreferenced.
-	var f func() interface{} = r.this.GetClass
-	// But it should return a value
-	return f() != nil
 }
 
 func (_ *GoObject) HashCode() int32 {
@@ -141,6 +138,10 @@ func NewGoArrayListWithCap(_ int32) *GoArrayList {
 	return new(GoArrayList)
 }
 
+func UnwrapGoArrayList(l gopkg.GoArrayList) {
+	_ = l.Unwrap().(*GoArrayList)
+}
+
 func CallSubset(s Character.Subset) {
 	s.ToString()
 }
@@ -158,7 +159,8 @@ func NewJavaObject() lang.Object {
 }
 
 func NewJavaInteger() lang.Integer {
-	return Integer.New_I(42)
+	i, _ := Integer.New(int32(42))
+	return i
 }
 
 type NoargConstructor struct {
@@ -169,7 +171,7 @@ type GoRand struct {
 	util.Random
 }
 
-func (_ *GoRand) Next(this util.Random, i int32) int32 {
+func (_ *GoRand) Next(this gopkg.GoRand, i int32) int32 {
 	return this.Super().Next(i)
 }
 
@@ -188,4 +190,15 @@ func CastRunnable(o lang.Object) lang.Runnable {
 	var r lang.Runnable = Runnable.Cast(o)
 	r.Run()
 	return r
+}
+
+// Test that extending classes from Java packages
+// with the same last component (in this case "net")
+// works.
+func NameClashingPackages(_ net.Socket, _ xnet.SocketFactory) {
+}
+
+func testReferenceToUnsupportedParameters() {
+	var ib nio.IntBuffer
+	ib.Put(nil)
 }
